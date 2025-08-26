@@ -1,4 +1,4 @@
-# esbuild-loader & Docker 멀티 스테이지
+# esbuild-minify & 모노레포 dockerfile 최적화
 
 <span style="font-size: 30px;">결과</span>
 
@@ -133,40 +133,35 @@ WORKDIR /usr/src/app
 COPY ./.yarn ./.yarn
 COPY ./packages ./packages
 COPY ./services/fem ./services/fem
+FROM 769475469275.dkr.ecr.ap-northeast-2.amazonaws.com/dockerhub/node:20.9.0 as base
+ENV SERVICE_DOMAIN=fem
+WORKDIR /usr/src/app
+COPY ./.yarn ./.yarn
+COPY ./packages ./packages
 COPY ./.yarnrc.yml ./.yarnrc.yml
 COPY ./package.json ./package.json
 COPY ./turbo.json ./turbo.json
 COPY ./yarn.lock ./yarn.lock
-
+COPY ./services/fem ./services/${SERVICE_DOMAIN}
 RUN yarn install
 RUN env=qa yarn packages@build
 
-<!-- 클라이언트 빌드 stage -->
-FROM 769475469275.dkr.ecr.ap-northeast-2.amazonaws.com/dockerhub/node:14.20.0 as clientbuild
-WORKDIR /usr/src/app  
-COPY --from=install /usr/src/app .
-WORKDIR /usr/src/app/services/fem
-RUN env=qa yarn build
+FROM base as build
+WORKDIR /usr/src/app/services/${SERVICE_DOMAIN}
+RUN env=qa yarn build:server & env=qa yarn build 
 
-<!-- 서버 빌드 stage -->
-FROM 769475469275.dkr.ecr.ap-northeast-2.amazonaws.com/dockerhub/node:14.20.0 as serverbuild
-WORKDIR /usr/src/app  
-COPY --from=install /usr/src/app .
-WORKDIR /usr/src/app/services/fem
-RUN env=qa yarn build:server
+FROM base as start
+WORKDIR /usr/src/app/services/${SERVICE_DOMAIN}
+COPY --from=build /usr/src/app/services/${SERVICE_DOMAIN}/build ./build
+COPY --from=build /usr/src/app/services/${SERVICE_DOMAIN}/buildServer ./buildServer
 
-FROM 769475469275.dkr.ecr.ap-northeast-2.amazonaws.com/dockerhub/node:14.20.0 as start
-WORKDIR /usr/src/app
-COPY --from=install /usr/src/app .
-
-WORKDIR /usr/src/app/services/fem
-<!-- 클라이언트 output / 서버 output 가져온다 -->
-COPY --from=clientbuild /usr/src/app/services/fem/build ./build
-COPY --from=serverbuild /usr/src/app/services/fem/buildServer ./buildServer
-
-CMD [ "node", "buildServer/server.js" ]
+CMD [ "yarn", "fem@start:server" ]
 ```
 
+![alt text](image-3.png)
 
 
+---
+# 2025.05.12 현황
 
+### 
