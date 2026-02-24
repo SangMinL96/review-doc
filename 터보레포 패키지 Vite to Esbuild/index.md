@@ -1,135 +1,178 @@
-추가된 package.json
+# 터보레포 패키지: Vite → Esbuild 번들러 교체
 
-type: module 변경
+번들러를 Vite에서 Esbuild로 바꾸면서 생긴 **문제**와 **의문점**을 정리한 문서입니다.
 
-exports 필드의 필요성이 높아짐
-exports 추가
- - js프로젝트 인 경우 해당 부분이 없으면 잘 가져오지 못함, ts는 잘가져옴
-- exports가 필요없는 프로젝트도 있을 수 있지만 그렇더라도 선언하는 것을 추천한다고함
+---
 
+## 1. package.json 변경 사항
 
-```
+### 1-1. `type: "module"` 적용
+
+- ESM 기준으로 동작하도록 설정
+
+### 1-2. `exports` 필드 추가 (필수에 가깝게)
+
+| 상황 | 설명 |
+|------|------|
+| **JS 프로젝트** | `exports`가 없으면 서브패스(`@encarpkg/design/v2` 등)를 제대로 가져오지 못하는 경우 있음 |
+| **TS 프로젝트** | 없어도 동작하는 경우가 많음 |
+| **권장** | 프로젝트에 따라 필수는 아니어도, **선언해 두는 것을 추천** (공식 문서 등에서도 권장) |
+
+**예시**
+
+```json
 "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./v2": {
-      "import": "./dist/v2.js",
-      "types": "./dist/v2.d.ts"
-    },
-    "./style.css": "./dist/style.css",
-    "./dist/style.css": "./dist/style.css"
+  ".": {
+    "import": "./dist/index.js",
+    "types": "./dist/index.d.ts"
   },
+  "./v2": {
+    "import": "./dist/v2.js",
+    "types": "./dist/v2.d.ts"
+  },
+  "./style.css": "./dist/style.css",
+  "./dist/style.css": "./dist/style.css"
+}
 ```
 
-typesVersions 추가 
-- TypeScript 전용 기능
-- 타입 정의 파일의 버전별 리디렉션 @encarpkg/design/v2 → dist/v2.d.ts 바라보게함
+### 1-3. `typesVersions` 추가
 
+- **TypeScript 전용** 기능
+- 타입 정의 파일의 **버전별 리디렉션**
+- 예: `@encarpkg/design/v2` → `dist/v2.d.ts` 를 바라보도록 설정
 
+---
 
+## 2. 타입 에러: `@encarpkg/design/v2` 인식 안 됨
 
+### 문제
 
-타입스크립트 환경에서 @encarpkg/design/v2 모듈을 가져오지 못하는 타입에러가 발생함
+- TypeScript 환경에서 `@encarpkg/design/v2` 모듈을 찾지 못해 **타입 에러** 발생
 
-초기 해결법
-tsconfig.json
-```
+### 초기 해결: `tsconfig.json`의 `paths` 추가
+
+```json
 {
   "compilerOptions": {
     "paths": {
-      "app/*": [
-        "./src/*"
-      ],
-      "@encarpkg/design/v2": [  << 추가함
-        "../../packages/design/dist/v2" 
-      ]
+      "app/*": ["./src/*"],
+      "@encarpkg/design/v2": ["../../packages/design/dist/v2"]
     }
-  },
+  }
 }
 ```
-해당 해결법의 의문 1.
-상대경로로 로컬 디자인 패키지에 dist파일을 타입 접근해도 되는지?
 
+### 의문 1: 상대 경로로 로컬 `dist` 타입만 가리켜도 되나?
 
-@encarpkg/design
-> ../../.yarn/__virtual__/@encarpkg-design-virtual-64739dac43/1/packages/design/dist/index.js
+**실제 resolve 되는 경로**
 
-@encarpkg/design/v2
+| import 대상 | 실제 resolve 경로 |
+|-------------|-------------------|
+| `@encarpkg/design` | `.yarn/__virtual__/.../packages/design/dist/index.js` (Yarn PnP 가상 경로) |
+| `@encarpkg/design/v2` (paths 사용 시) | `packages/design/dist/v2.js` (로컬 소스 기준) |
 
-> ../../packages/design/dist/v2.js
+**정리**
 
-번들링 과정에서 해당 모듈을 resolve할때 두개의 경로에서 가져다 사용한다
+- 둘 다 **로컬 패키지**이고, 결과물은 동일한 `dist` 빌드 산출물
+- Yarn PnP가 압축한 가상 경로 vs 로컬 소스 경로의 차이일 뿐
+- **타입/실행 모두 로컬 dist를 가리키면 되므로**, 상대 경로로 `dist`에 접근해도 무방
 
-두 경로의 차이점은 yarn pnp가 압축한 로컬 패키지 vs 로컬 소스 경로
+**주의할 점**
 
-결국 두개의 결과물이 로컬 패키지이고 둘 중 어느 곳으로 경로를 가져와도 상관이 없다
+| 항목 | 내용 |
+|------|------|
+| 코드 수정 시 | `packages/design` 수정 시 `dist/` (예: `v2.js`) **반드시 재빌드** (이미 그렇게 하고 있으면 OK) |
+| exports 일치 | `exports["./v2"]`가 실제 빌드 파일·타입 선언 경로와 맞아야 함 |
+| 패키지 공개 여부 | 외부 배포 시엔 `exports`와 타입 경로 싱크 안 맞으면 에러 나기 쉽고, **로컬 전용**이면 위 설정만으로 충분 |
 
-주의할점
-packages/design 쪽 코드를 수정하면 dist/ 내 빌드 산출물(v2.js)도 반드시 재생성해야 합니다. (반드시 재생성됨)
-exports["./v2"]가 실제 빌드 파일과 타입 선언을 올바르게 가리켜야 합니다
-(타입스크립트에선 로컬경로로 잘 선언하여 사용하고 있었는데 외부로 패키지 공개 할 경우 exports를 바라보기 때문에 싱크가 안맞는경우 에러 발생, 하지만 우리는 패키지를 공개하지 않고 로컬에서만 사용하니까 상관없음)
+---
 
+## 3. 이미지 에셋: .spr Base64 미지원
 
+### 비교
 
+| 번들러 | 동작 |
+|--------|------|
+| **Vite** | 이미지를 **전부 Base64**로 변환해서 사용 |
+| **Esbuild** | **.spr 이미지는 Base64 처리 안 해 줌** (다른 포맷은 방법 있을 수 있으나, .spr용 방법은 못 찾음) |
 
+### 해결
 
+- **.spr 파일만** `dist/assets` 등으로 **복사**해 두고, 런타임에서는 해당 경로를 참조하도록 처리
 
-기존 vite는 모든 이미지를 base64변환하여 사용
-esbuild에선 spr이미지는 base64처리를 안해주는 이슈가 생김(base64로 변환해줄수있을텐데 방법을 못찾음)
-assets/spr파일만 dist/assets으로 복사처리하여 해당 경로로 바라보게함
+---
 
+## 4. secureKeypad (Node 전용 모듈 플러그인)
 
+### 문제
 
-secureKeypad
-node전용모듈 플러그인
+- **.wasm** 파일이 Esbuild 빌드 과정에서 **Base64로 제대로 변환되지 않음**
 
-.wasm파일을 제대로 base64로 변환이 안되어서 동적 import로 바꿈 
-```
-  async function findWasmBinary() {
-        const wasmDataUrl = (await import('./KeypadCryptoWASM.wasm')).default;
-        if (Module.locateFile) {
-          const f = wasmDataUrl;
-          if (!isDataURI(f)) {
-            return locateFile(f);
-          }
-          return f;
-        }
-        return wasmDataUrl;
-        
-      }
-```
+### 해결: 동적 import로 로딩
 
-빌드 후 런타임에서 new dummy에서 에러 발생 
-```
-	/*
-       * Previously, the following line was just:
-       *   function dummy() {};
-       * Unfortunately, Chrome was preserving 'dummy' as the object's name, even
-       * though at creation, the 'dummy' has the correct constructor name.  Thus,
-       * objects created with IMVU.new would show up in the debugger as 'dummy',
-       * which isn't very helpful.  Using IMVU.createNamedFunction addresses the
-       * issue.  Doubly-unfortunately, there's no way to write a test for this
-       * behavior.  -NRD 20
-```
-디버깅이 어려워서 function dummy() {};에서 바꿨다는 주석처리가 되어있음. 다시 function dummy() {};으로 바꿨더니 정상동작함
-디버깅을 할 일이 없어서 괜찮지 않나 싶어 해당 방안으로 해결함
+- .wasm을 빌드 타임에 Base64로 박지 않고, **런타임에 동적 import**로 불러오기
 
-
-
-
-### craco external추가
-```
-if (one.test.toString().includes('js') || one.test.toString().includes('jsx')) {
-    one.exclude = (filePath) => {
-      if (/node_modules/.test(filePath)) return true;
-      if (filePath.includes('.yarn')) return true;
-      return false;
-    };
-    one.include = path.resolve(root, 'src');
+```javascript
+async function findWasmBinary() {
+  const wasmDataUrl = (await import('./KeypadCryptoWASM.wasm')).default;
+  if (Module.locateFile) {
+    const f = wasmDataUrl;
+    if (!isDataURI(f)) return locateFile(f);
+    return f;
   }
+  return wasmDataUrl;
+}
 ```
 
-vite는 내부적으로 외부모듈에 대한 exclude/include 처리가 잘되어있지만
-esbuild는 exclude/include가 명확하지 않으면, 빌드 시 esbuild 패키지에서 사용된 모든 패키지모듈을 다시 번들링 할 수 있음
+---
+
+## 5. 런타임 에러: `new dummy` 관련
+
+### 현상
+
+- 빌드 후 **런타임**에서 `new dummy` 쪽에서 에러 발생
+- 원래 코드는 디버깅 시 생성자 이름이 `dummy`로만 보이는 문제를 피하려고 `IMVU.createNamedFunction` 등으로 바꿔 둔 상태였음
+
+### 해결
+
+- 주석에 적힌 대로 **다시 `function dummy() {};` 로 되돌리니** 정상 동작
+- 디버깅 시 생성자 이름이 `dummy`로 보이는 건 당장 불편하지 않아서, **해당 방식으로 해결**하고 마무리
+
+---
+
+## 6. Craco: Esbuild용 exclude / include (external 처리)
+
+### 배경
+
+| 번들러 | 동작 |
+|--------|------|
+| **Vite** | 외부 모듈에 대한 **exclude / include**가 내부적으로 잘 잡혀 있음 |
+| **Esbuild** | **exclude / include가 명확하지 않으면**, 빌드 시 해당 패키지가 쓰는 **모든 패키지 모듈을 다시 번들링**할 수 있음 |
+
+### 대응: Craco에서 rule 제한
+
+- JS/JSX에 대한 rule에서 **exclude / include**를 명시해, `node_modules`·`.yarn`은 제외하고 **`src`만** 타깃으로 두기
+
+```javascript
+if (one.test.toString().includes('js') || one.test.toString().includes('jsx')) {
+  one.exclude = (filePath) => {
+    if (/node_modules/.test(filePath)) return true;
+    if (filePath.includes('.yarn')) return true;
+    return false;
+  };
+  one.include = path.resolve(root, 'src');
+}
+```
+
+---
+
+## 발표 시 참고 요약
+
+| 구분 | 내용 |
+|------|------|
+| **package.json** | `type: "module"`, `exports`(서브패스·타입·CSS), `typesVersions` 추가 |
+| **타입 에러** | `@encarpkg/design/v2` → `paths`로 로컬 `dist` 지정; 로컬 전용이면 상대 경로로 dist 타입 참조 가능 |
+| **이미지** | Vite는 전부 Base64, Esbuild는 .spr 미지원 → .spr만 dist/assets로 복사 후 경로 참조 |
+| **secureKeypad** | .wasm Base64 실패 → 동적 `import()` 로 로딩 |
+| **dummy** | 런타임 에러 → `function dummy() {}` 로 복귀 후 해결 |
+| **Craco** | Esbuild가 node_modules까지 다시 번들링하지 않도록 exclude/include로 `src`만 번들 대상으로 제한 |
