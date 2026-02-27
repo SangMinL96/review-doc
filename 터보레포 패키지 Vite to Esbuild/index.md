@@ -1,178 +1,199 @@
 # 터보레포 패키지: Vite → Esbuild 번들러 교체
 
-번들러를 Vite에서 Esbuild로 바꾸면서 생긴 **문제**와 **의문점**을 정리한 문서입니다.
+번들러를 Vite에서 Esbuild로 바꾸면서 생긴 *시작* **문제**와 **의문점**을 정리한 문서입니다.
 
 ---
 
-## 1. package.json 변경 사항
+추가 내용
+// 개선해야하는 이유
+- vite는 로컬환경에선 rollup빌드 , 프로덕션 환경에서 esbuild로 알고 있다
+- 현재 모노레포 공통패키지의 사이즈가 커지고 있음에 따라 각 개발자들의 로컬환경에서의 실행속도가 현저히 드려졌다(패키지 수정이 있을 시 20초 기다린 후 반영됨)
+- 번들러 자체를 esbuild로 바꾸어 주면 로컬에서도 빠른 환경 제공 가능 (반영시간 약 4초)
 
-### 1-1. `type: "module"` 적용
+// 작업해야할 것들
+1. esbuild.config.js 생성 후 기본적인 환경 설정 
+```js
+const baseBuildOptions = {
+    bundle: true,
+    target: ['esnext'],
+    platform: 'browser',
+    external: ['react', 'react-dom', 'axios'],
+    sourcemap: !isWatch,
+    minify: isProd,
+    minifyIdentifiers: false,
+    tsconfig: resolve(__dirname, 'tsconfig.json'),
+    loader: {
+        '.wasm': 'dataurl',
+        '.gif': 'dataurl',
+        '.png': 'dataurl',
+        '.jpg': 'dataurl',
+        '.jpeg': 'dataurl',
+        '.svg': 'dataurl',
+        '.webp': 'dataurl',
+    },
+    plugins: [
+        nodeModulesPolyfillPlugin(),
+        cssModulesPlugIn(),
+        copy({
+            assets: {
+                from: [resolve(__dirname, 'src/assets/images/spr/*')],
+                to: [resolve(__dirname, 'dist/assets/images/spr')],
+            },
+            watch: isWatch,
+        }),
+    ],
+    define: {
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
+    },
+};
+```
+아주 간단한 프로젝트는 때에 따라 빠르게 esbuild 번들러 적용이 가능하지만
+저희는 vite환경으로 운영되던 환경을 마이그레이션 해야하기 때문에 문제가 있었다
+(예외로 공동패키지에 shared, api)는 큰문제 없이 번들러 교체가 가능했다
+이유는 css,assets파일 서버모듈과 같은 파일을 사용하지 않기때문이다
 
-- ESM 기준으로 동작하도록 설정
+#문제 
+초기 config작성 후 빌드 시 당연히 실패 했다
+일단 문제를 찾아보니 KeypadCryptoWASM 파일의 서버모듈 사용이였다.
 
-### 1-2. `exports` 필드 추가 (필수에 가깝게)
+문제1. KeypadCryptoWASM 디버깅
+- esbuild 빌드 진행시 KeypadCryptoWASM에서 사용하고 있는 node서버모듈이 문제였다
+```js
+ // the complexity of lazy-loading.
+        var fs = require('fs');
+        const nodePath = require('path');
+        // EXPORT_ES6 + ENVIRONMENT_IS_NODE always requires use of import.meta.url,
+        // since there's no way getting the current absolute path of the module when
+        // support for that is not available.
+        scriptDirectory = require('url')
+          .fileURLToPath(new URL('./', import.meta.url));
+```
+근데 KeypadCryptoWASM가 뭔데?
+KeypadCryptoWASM은 강상규 과장님이 보안키패드 작업 시 엔카에 맞게 커스텀을 하기 위해 KeypadCryptoWASM 의 CDN파일을 그대로 파일로 만든 것
+KeypadCryptoWASM내부 소스를 살펴보니 서버,클라이언트 모든 환경에 맞게 설계되었다
 
-| 상황 | 설명 |
-|------|------|
-| **JS 프로젝트** | `exports`가 없으면 서브패스(`@encarpkg/design/v2` 등)를 제대로 가져오지 못하는 경우 있음 |
-| **TS 프로젝트** | 없어도 동작하는 경우가 많음 |
-| **권장** | 프로젝트에 따라 필수는 아니어도, **선언해 두는 것을 추천** (공식 문서 등에서도 권장) |
+- 기존 vite 버전에선 node서버모듈 함수들이 존재 했지만 esbuild번들러로 교체하면서 해당 모듈이 없어 에러가 발생했다
 
-**예시**
 
-```json
-"exports": {
-  ".": {
-    "import": "./dist/index.js",
-    "types": "./dist/index.d.ts"
-  },
-  "./v2": {
-    "import": "./dist/v2.js",
-    "types": "./dist/v2.d.ts"
-  },
-  "./style.css": "./dist/style.css",
-  "./dist/style.css": "./dist/style.css"
+#해결 
+- 먼저 KeypadCryptoWASM파일에서 node서버 모듈 사용을 제거를 진행해보았다
+  문제는 핵심 로직들도 서버모듈을 사용한 로직들이 많아 어떤 사이드이펙트가 발생할 지 예상 불가하여 포기했다
+- esbuild 폴리필을 찾아보았고 'esbuild-plugins-node-modules-polyfill' 사용하여 해결했다
+
+문제2. module scss컨파일러 및 파싱 문제
+- vite에서 라이브러리 모드를 사용했었고 빌드 시 dist폴더에 styles.css 1개의 css파일에서 모든 곳에서 사용하고 있는 상황이였다
+- esbuild시 styles.css 생성은 물론이고 postcss사용 시 각 jsx 클래스 마다 컴포런트 이름과 함께 generateScopedName된 css 클래스명을 가지도록 해야하는데
+그렇지 않았다
+
+해결
+- 처음엔 도저히 어떻게 접근해야할지 몰랐다 postcss사용하는건 맞는데... 레퍼런스를 찾아보았다
+- vite는 어떻게 처리했나 궁금하여 https://github.com/vitejs/vite 저장소 복사하여 내부코드를 조사했다
+- postcssModules검색하여 css.ts파일을 찾아 참고하였다
+- 먼저 postcssModules를 사용하여 generateScopedName하여 유니크한 클래스명을 제공하였고
+- postcssUrl를 통해 spr파일과 scss에 선언된 이미지파일을 inline으로 바꾸는 작업을 했다
+- 파싱된 css파일을 한곳에 모아 styles.css에 넣는 과정을 한다
+
+```js
+export default function cssModulesPlugIn() {
+    const scssVariable = `
+         $encarUrlStatic: '${ENCAR_URL_STATIC || ''}';\n
+     `
+    const cssBundlePath = resolve(designDir, 'dist/style.css');
+    return {
+        name: 'css-modules-plugin',
+        setup(build) {
+            build.onLoad({ filter: /\.(s[ac]ss|css)$/ }, async (args) => {
+                const source = await fs.readFile(args.path, 'utf8');
+                const result = sass.renderSync({
+                    file: args.path,
+                    data: scssVariable + source,
+                    includePaths: [
+                        resolve(designDir, 'src'),
+                    ],
+                });
+                const css = result.css.toString();
+
+                const postcssPlugins = [
+                  // assets 처리
+                    postcssUrl({
+                        url: (asset) => {
+                            if (asset.url.startsWith('/src/assets/images/spr/')) {
+                                return asset.url.replace(/^\/src\/assets\/images\/spr\//, './assets/images/spr/');
+                            }
+                            return asset.url;
+                        }
+                    }),
+                    postcssUrl({
+                        url: 'inline',
+                        filter: /\.(png|jpg|jpeg|gif|svg)$/i,
+                        maxSize: 1000 * 1024,
+                    }),
+                    cssnano()
+                ]
+
+                if (args.path.includes('.module.scss')) {
+                  // generateScopedName 처리
+                    postcssPlugins.push(postcssModules({
+                        generateScopedName: '[name]_[local]__[hash:base64:5]',
+                        localsConvention: 'camelCase',
+                        getJSON: (_, json) => { cssModuleMapping = json; }
+                    }))
+                }
+
+
+                // 맵핑하여 css 코드 넣기
+                let cssModuleMapping = {};
+                const postcssResult = await postcss(postcssPlugins).process(css, { from: args.path });
+                await fs.appendFile(cssBundlePath, postcssResult.css + '\n');
+
+                return {
+                    contents: `
+                        export default ${JSON.stringify(cssModuleMapping)};
+                        export const css = ${JSON.stringify(postcssResult.css)};
+                    `,
+                    loader: 'js'
+                };
+            });
+        }
+    };
 }
 ```
+- 해당 작업을 직접 분석하고 구현하니 vite번들러에서 어떻게 styles.css를 만들어내는지 알수있게 됐다
 
-### 1-3. `typesVersions` 추가
 
-- **TypeScript 전용** 기능
-- 타입 정의 파일의 **버전별 리디렉션**
-- 예: `@encarpkg/design/v2` → `dist/v2.d.ts` 를 바라보도록 설정
 
----
 
-## 2. 타입 에러: `@encarpkg/design/v2` 인식 안 됨
-
-### 문제
-
-- TypeScript 환경에서 `@encarpkg/design/v2` 모듈을 찾지 못해 **타입 에러** 발생
-
-### 초기 해결: `tsconfig.json`의 `paths` 추가
-
-```json
-{
-  "compilerOptions": {
-    "paths": {
-      "app/*": ["./src/*"],
-      "@encarpkg/design/v2": ["../../packages/design/dist/v2"]
-    }
-  }
+async function buildTypes() {
+    const tsCache = !isProd ? '--incremental --tsBuildInfoFile dist/.tsbuildinfo' : '';
+    return new Promise((resolve) => {
+        exec(`tsc ${tsCache} --project tsconfig.json`, (error, stdout, stderr) => {
+            if (stderr) {
+                console.error(`stderr: ${stderr}`);
+            }
+            resolve(stdout);
+        });
+    });
 }
-```
 
-### 의문 1: 상대 경로로 로컬 `dist` 타입만 가리켜도 되나?
-
-**실제 resolve 되는 경로**
-
-| import 대상 | 실제 resolve 경로 |
-|-------------|-------------------|
-| `@encarpkg/design` | `.yarn/__virtual__/.../packages/design/dist/index.js` (Yarn PnP 가상 경로) |
-| `@encarpkg/design/v2` (paths 사용 시) | `packages/design/dist/v2.js` (로컬 소스 기준) |
-
-**정리**
-
-- 둘 다 **로컬 패키지**이고, 결과물은 동일한 `dist` 빌드 산출물
-- Yarn PnP가 압축한 가상 경로 vs 로컬 소스 경로의 차이일 뿐
-- **타입/실행 모두 로컬 dist를 가리키면 되므로**, 상대 경로로 `dist`에 접근해도 무방
-
-**주의할 점**
-
-| 항목 | 내용 |
-|------|------|
-| 코드 수정 시 | `packages/design` 수정 시 `dist/` (예: `v2.js`) **반드시 재빌드** (이미 그렇게 하고 있으면 OK) |
-| exports 일치 | `exports["./v2"]`가 실제 빌드 파일·타입 선언 경로와 맞아야 함 |
-| 패키지 공개 여부 | 외부 배포 시엔 `exports`와 타입 경로 싱크 안 맞으면 에러 나기 쉽고, **로컬 전용**이면 위 설정만으로 충분 |
-
----
-
-## 3. 이미지 에셋: .spr Base64 미지원
-
-### 비교
-
-| 번들러 | 동작 |
-|--------|------|
-| **Vite** | 이미지를 **전부 Base64**로 변환해서 사용 |
-| **Esbuild** | **.spr 이미지는 Base64 처리 안 해 줌** (다른 포맷은 방법 있을 수 있으나, .spr용 방법은 못 찾음) |
-
-### 해결
-
-- **.spr 파일만** `dist/assets` 등으로 **복사**해 두고, 런타임에서는 해당 경로를 참조하도록 처리
-
----
-
-## 4. secureKeypad (Node 전용 모듈 플러그인)
-
-### 문제
-
-- **.wasm** 파일이 Esbuild 빌드 과정에서 **Base64로 제대로 변환되지 않음**
-
-### 해결: 동적 import로 로딩
-
-- .wasm을 빌드 타임에 Base64로 박지 않고, **런타임에 동적 import**로 불러오기
-
-```javascript
-async function findWasmBinary() {
-  const wasmDataUrl = (await import('./KeypadCryptoWASM.wasm')).default;
-  if (Module.locateFile) {
-    const f = wasmDataUrl;
-    if (!isDataURI(f)) return locateFile(f);
-    return f;
-  }
-  return wasmDataUrl;
+export default function rebuildTimerPlugin(name) {
+	let isFirstBuild = true;
+	let start = 0;
+	return {
+		name: 'rebuild-timer',
+		setup(build) {
+			build.onStart(() => {
+				console.log(`🔁 ${name} watch모드 실행 중`);
+				start = Date.now();
+			});
+			build.onEnd(() => {
+				const duration = Date.now() - start;
+				if (isFirstBuild) {
+					isFirstBuild = false;
+				} else {
+					const elapsed = ((duration) / 1000).toFixed(2);
+					console.log(`✅ ${name} 재빌드 성공 (${elapsed}초 소요)`);
+				}
+			});
+		},
+	};
 }
-```
-
----
-
-## 5. 런타임 에러: `new dummy` 관련
-
-### 현상
-
-- 빌드 후 **런타임**에서 `new dummy` 쪽에서 에러 발생
-- 원래 코드는 디버깅 시 생성자 이름이 `dummy`로만 보이는 문제를 피하려고 `IMVU.createNamedFunction` 등으로 바꿔 둔 상태였음
-
-### 해결
-
-- 주석에 적힌 대로 **다시 `function dummy() {};` 로 되돌리니** 정상 동작
-- 디버깅 시 생성자 이름이 `dummy`로 보이는 건 당장 불편하지 않아서, **해당 방식으로 해결**하고 마무리
-
----
-
-## 6. Craco: Esbuild용 exclude / include (external 처리)
-
-### 배경
-
-| 번들러 | 동작 |
-|--------|------|
-| **Vite** | 외부 모듈에 대한 **exclude / include**가 내부적으로 잘 잡혀 있음 |
-| **Esbuild** | **exclude / include가 명확하지 않으면**, 빌드 시 해당 패키지가 쓰는 **모든 패키지 모듈을 다시 번들링**할 수 있음 |
-
-### 대응: Craco에서 rule 제한
-
-- JS/JSX에 대한 rule에서 **exclude / include**를 명시해, `node_modules`·`.yarn`은 제외하고 **`src`만** 타깃으로 두기
-
-```javascript
-if (one.test.toString().includes('js') || one.test.toString().includes('jsx')) {
-  one.exclude = (filePath) => {
-    if (/node_modules/.test(filePath)) return true;
-    if (filePath.includes('.yarn')) return true;
-    return false;
-  };
-  one.include = path.resolve(root, 'src');
-}
-```
-
----
-
-## 발표 시 참고 요약
-
-| 구분 | 내용 |
-|------|------|
-| **package.json** | `type: "module"`, `exports`(서브패스·타입·CSS), `typesVersions` 추가 |
-| **타입 에러** | `@encarpkg/design/v2` → `paths`로 로컬 `dist` 지정; 로컬 전용이면 상대 경로로 dist 타입 참조 가능 |
-| **이미지** | Vite는 전부 Base64, Esbuild는 .spr 미지원 → .spr만 dist/assets로 복사 후 경로 참조 |
-| **secureKeypad** | .wasm Base64 실패 → 동적 `import()` 로 로딩 |
-| **dummy** | 런타임 에러 → `function dummy() {}` 로 복귀 후 해결 |
-| **Craco** | Esbuild가 node_modules까지 다시 번들링하지 않도록 exclude/include로 `src`만 번들 대상으로 제한 |
