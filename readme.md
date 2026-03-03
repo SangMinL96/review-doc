@@ -15,5 +15,6 @@
 | [터보레포 패키지 Vite to Esbuild](./터보레포%20패키지%20Vite%20to%20Esbuild/) | 번들러를 Vite에서 Esbuild로 교체 시 이슈와 해결 정리                     |
 | [esbuild-minify & 모노레포 Dockerfile 최적화](./esbuild&dockerfile/)   | Terser→esbuild Minify, Docker 멀티스테이지로 빌드 시간 단축          |
 | [FEM 로컬환경 Vite 번들러 사용기](./fem로컬환경%20vite번들러%20사용기/)             | FEM 로컬 개발에 Vite 도입 배경, 장점, 이슈, 논의 내용                    |
+| [Vite 멀티엔트리 & sub-path 작업](./vite멀티엔트리%20sub-path작업/)             | 멀티엔트리 도입으로 서브패스 청크 분리 시 문제 및 해결 정리                       |
 
 
