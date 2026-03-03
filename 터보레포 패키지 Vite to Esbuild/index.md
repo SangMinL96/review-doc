@@ -1,17 +1,21 @@
 # 터보레포 패키지: Vite → Esbuild 번들러 교체
 
-번들러를 Vite에서 Esbuild로 바꾸면서 생긴 *시작* **문제**와 **의문점**을 정리한 문서입니다.
+---
+
+## 배경 및 개선 이유
+
+- Vite는 로컬 환경에서 **Rollup** 빌드, 프로덕션 환경에서 **Esbuild**로 동작
+- 모노레포 공통 패키지의 사이즈가 커지면서 로컬 환경 실행 속도가 현저히 느려짐
+  - 패키지 수정 시 반영까지 **약 20초** 소요
+- 번들러를 Esbuild로 교체하면 로컬에서도 빠른 환경 제공 가능
+  - 교체 후 반영 시간 **약 4초**
 
 ---
 
-추가 내용
-// 개선해야하는 이유
-- vite는 로컬환경에선 rollup빌드 , 프로덕션 환경에서 esbuild로 알고 있다
-- 현재 모노레포 공통패키지의 사이즈가 커지고 있음에 따라 각 개발자들의 로컬환경에서의 실행속도가 현저히 드려졌다(패키지 수정이 있을 시 20초 기다린 후 반영됨)
-- 번들러 자체를 esbuild로 바꾸어 주면 로컬에서도 빠른 환경 제공 가능 (반영시간 약 4초)
+## 작업 내용
 
-// 작업해야할 것들
-1. esbuild.config.js 생성 후 기본적인 환경 설정 
+### 1. esbuild.config.js 기본 환경 설정
+
 ```js
 const baseBuildOptions = {
     bundle: true,
@@ -47,51 +51,54 @@ const baseBuildOptions = {
     },
 };
 ```
-아주 간단한 프로젝트는 때에 따라 빠르게 esbuild 번들러 적용이 가능하지만
-저희는 vite환경으로 운영되던 환경을 마이그레이션 해야하기 때문에 문제가 있었다
-(예외로 공동패키지에 shared, api)는 큰문제 없이 번들러 교체가 가능했다
-이유는 css,assets파일 서버모듈과 같은 파일을 사용하지 않기때문이다
 
-#문제 
-초기 config작성 후 빌드 시 당연히 실패 했다
-일단 문제를 찾아보니 KeypadCryptoWASM 파일의 서버모듈 사용이였다.
+> 간단한 프로젝트는 빠르게 Esbuild 적용이 가능하지만,
+> Vite 환경에서 마이그레이션하는 경우 여러 문제가 발생했다.
+> (단, `shared`, `api` 같이 CSS·Assets·서버 모듈을 사용하지 않는 패키지는 큰 문제 없이 교체 가능)
 
-문제1. KeypadCryptoWASM 디버깅
-- esbuild 빌드 진행시 KeypadCryptoWASM에서 사용하고 있는 node서버모듈이 문제였다
+---
+
+## 문제 및 해결
+
+### 문제 1. KeypadCryptoWASM — Node 서버 모듈 충돌
+
+**원인**
+
+- `KeypadCryptoWASM`은 보안 키패드를 위해 CDN 파일을 그대로 소스로 만든 파일로,
+  서버·클라이언트 **모든 환경에 맞게 설계**되어 내부에 Node 서버 모듈을 포함
+
 ```js
- // the complexity of lazy-loading.
-        var fs = require('fs');
-        const nodePath = require('path');
-        // EXPORT_ES6 + ENVIRONMENT_IS_NODE always requires use of import.meta.url,
-        // since there's no way getting the current absolute path of the module when
-        // support for that is not available.
-        scriptDirectory = require('url')
-          .fileURLToPath(new URL('./', import.meta.url));
+var fs = require('fs');
+const nodePath = require('path');
+scriptDirectory = require('url')
+  .fileURLToPath(new URL('./', import.meta.url));
 ```
-근데 KeypadCryptoWASM가 뭔데?
-KeypadCryptoWASM은 강상규 과장님이 보안키패드 작업 시 엔카에 맞게 커스텀을 하기 위해 KeypadCryptoWASM 의 CDN파일을 그대로 파일로 만든 것
-KeypadCryptoWASM내부 소스를 살펴보니 서버,클라이언트 모든 환경에 맞게 설계되었다
 
-- 기존 vite 버전에선 node서버모듈 함수들이 존재 했지만 esbuild번들러로 교체하면서 해당 모듈이 없어 에러가 발생했다
+- 기존 Vite에서는 Node 서버 모듈이 존재했으나, Esbuild 교체 후 해당 모듈을 찾지 못해 에러 발생
 
+**해결**
 
-#해결 
-- 먼저 KeypadCryptoWASM파일에서 node서버 모듈 사용을 제거를 진행해보았다
-  문제는 핵심 로직들도 서버모듈을 사용한 로직들이 많아 어떤 사이드이펙트가 발생할 지 예상 불가하여 포기했다
-- esbuild 폴리필을 찾아보았고 'esbuild-plugins-node-modules-polyfill' 사용하여 해결했다
+- 내부 핵심 로직이 서버 모듈에 의존하고 있어 직접 제거 시 사이드 이펙트 예측 불가 → 포기
+- **`esbuild-plugins-node-modules-polyfill`** 플러그인 적용으로 해결
 
-문제2. module scss컨파일러 및 파싱 문제
-- vite에서 라이브러리 모드를 사용했었고 빌드 시 dist폴더에 styles.css 1개의 css파일에서 모든 곳에서 사용하고 있는 상황이였다
-- esbuild시 styles.css 생성은 물론이고 postcss사용 시 각 jsx 클래스 마다 컴포런트 이름과 함께 generateScopedName된 css 클래스명을 가지도록 해야하는데
-그렇지 않았다
+---
 
-해결
-- 처음엔 도저히 어떻게 접근해야할지 몰랐다 postcss사용하는건 맞는데... 레퍼런스를 찾아보았다
-- vite는 어떻게 처리했나 궁금하여 https://github.com/vitejs/vite 저장소 복사하여 내부코드를 조사했다
-- postcssModules검색하여 css.ts파일을 찾아 참고하였다
-- 먼저 postcssModules를 사용하여 generateScopedName하여 유니크한 클래스명을 제공하였고
-- postcssUrl를 통해 spr파일과 scss에 선언된 이미지파일을 inline으로 바꾸는 작업을 했다
-- 파싱된 css파일을 한곳에 모아 styles.css에 넣는 과정을 한다
+### 문제 2. CSS Module 컴파일 및 파싱
+
+**원인**
+
+- Vite 라이브러리 모드에서는 빌드 시 `style.css` 1개 파일에 모든 스타일이 자동으로 번들링
+- Esbuild로 전환 시 아래 두 가지가 자동으로 처리되지 않음
+  1. `style.css` 파일 생성
+  2. CSS Module의 `generateScopedName`을 통한 유니크 클래스명 부여
+
+**해결 과정**
+
+- Vite 공식 저장소(`https://github.com/vitejs/vite`) 내부 코드 분석 → `css.ts` 파일 참고
+- `postcssModules` → 유니크 클래스명(`[name]_[local]__[hash:base64:5]`) 생성
+- `postcssUrl` → `.spr` 파일 경로 재작성 및 이미지 파일 Base64 inline 변환
+- `cssnano` → CSS 압축
+- 처리된 CSS를 `style.css`에 누적 기록
 
 ```js
 export default function cssModulesPlugIn() {
@@ -140,8 +147,6 @@ export default function cssModulesPlugIn() {
                     }))
                 }
 
-
-                // 맵핑하여 css 코드 넣기
                 let cssModuleMapping = {};
                 const postcssResult = await postcss(postcssPlugins).process(css, { from: args.path });
                 await fs.appendFile(cssBundlePath, postcssResult.css + '\n');
@@ -158,11 +163,33 @@ export default function cssModulesPlugIn() {
     };
 }
 ```
-- 해당 작업을 직접 분석하고 구현하니 vite번들러에서 어떻게 styles.css를 만들어내는지 알수있게 됐다
 
+> 이 작업을 직접 분석하고 구현하면서 Vite가 `style.css`를 만들어내는 내부 동작 원리를 이해할 수 있었다.
 
+---
 
+### 문제 3. TypeScript d.ts 생성 속도
 
+**원인**
+
+- Esbuild는 타입 선언 파일(`d.ts`)을 생성하지 않아 `tsc`를 별도로 실행해야 함
+- 빌드 자체는 1~2초이나 `d.ts` 생성에 **8초** 소요
+- Watch 모드에서 파일 변경 시마다 8초씩 재생성 발생
+
+```js
+await Promise.all([
+    esbuild.build(buildOptionsEsm),
+    esbuild.build(buildOptionsEsmV2),
+    buildTypes()
+]);
+```
+
+**해결**
+
+- `--incremental`: 변경된 파일만 증분 컴파일
+- `--tsBuildInfoFile`: 증분 캐시 파일 위치 지정 → 이후 watch 시 캐시 활용
+
+```js
 async function buildTypes() {
     const tsCache = !isProd ? '--incremental --tsBuildInfoFile dist/.tsbuildinfo' : '';
     return new Promise((resolve) => {
@@ -174,7 +201,17 @@ async function buildTypes() {
         });
     });
 }
+```
 
+---
+
+### 문제 4. 빌드 시간 측정 로그 부재
+
+**해결**
+
+- 빌드 시작/종료 시점을 측정하는 플러그인 직접 구현
+
+```js
 export default function rebuildTimerPlugin(name) {
 	let isFirstBuild = true;
 	let start = 0;
@@ -197,3 +234,144 @@ export default function rebuildTimerPlugin(name) {
 		},
 	};
 }
+```
+
+---
+
+## 결과
+
+|          | Before (Vite) | After (Esbuild) |
+|----------|:-------------:|:---------------:|
+| 첫 빌드  | 10초          | 20초            |
+| Watch 모드 | 2초         | 12초            |
+
+> 첫 빌드 및 watch 첫 실행은 `d.ts` 생성 비용으로 인해 느리지만,
+> watch 모드에서 **증분 컴파일 캐시** 적용 후 재빌드 시에는 빠른 속도를 기대할 수 있다.
+
+---
+
+## 작업 후기
+
+- Esbuild의 SCSS 처리 부분은 기본 지식이 부족해 처음엔 막막했으나, Vite 내부 코드를 직접 분석하며 구현할 수 있었다
+- `KeypadCryptoWASM` 같은 파일은 여러 모로 문제가 많아 **S3 저장소에 올려 CDN으로 사용**하는 것이 적합해 보인다
+- 모노레포 디자인 패키지 내에 **특정 스쿼드만 사용하는 파일**이 포함되어 있는 것을 확인
+  - 디자인 패키지는 모든 스쿼드가 공통으로 사용하는 것만 유지하고,
+  - 스쿼드 간 공유가 필요한 파일은 별도 패키지(예: `hub`)를 만들어 분리하는 방향을 검토해볼 만하다
+
+
+
+## 전체 코드
+```js
+import esbuild from 'esbuild';
+import { exec } from 'child_process';
+import copy from 'esbuild-plugin-copy';
+import fs from 'fs/promises';
+import path, { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+import cssModulesPlugIn from './esbuild-plugin/cssModulePlugin.mjs';
+import { nodeModulesPolyfillPlugin } from 'esbuild-plugins-node-modules-polyfill';
+import rebuildTimerPlugin from './esbuild-plugin/rebuildTimerPlugin.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const isWatch = process.argv.includes('--watch');
+const isProd = process.env.NODE_ENV === 'production';
+const distDir = path.resolve(__dirname, 'dist');
+
+await fs.writeFile(resolve(__dirname, 'dist/style.css'), '').catch(() => { });
+await fs.mkdir(distDir, { recursive: true });
+
+const baseBuildOptions = {
+    bundle: true,
+    target: ['esnext'],
+    platform: 'browser',
+    external: ['react', 'react-dom', 'axios'],
+    sourcemap: !isWatch,
+    minify: isProd,
+    minifyIdentifiers: false,
+    tsconfig: resolve(__dirname, 'tsconfig.json'),
+    loader: {
+        '.wasm': 'dataurl',
+        '.gif': 'dataurl',
+        '.png': 'dataurl',
+        '.jpg': 'dataurl',
+        '.jpeg': 'dataurl',
+        '.svg': 'dataurl',
+        '.webp': 'dataurl',
+    },
+    plugins: [
+        nodeModulesPolyfillPlugin(),
+        cssModulesPlugIn(),
+        copy({
+            assets: {
+                from: [resolve(__dirname, 'src/assets/images/spr/*')],
+                to: [resolve(__dirname, 'dist/assets/images/spr')],
+            },
+            watch: isWatch,
+        }),
+    ],
+    define: {
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
+    },
+};
+
+const buildOptionsEsm = {
+    ...baseBuildOptions,
+    plugins:[
+        ...baseBuildOptions.plugins, 
+        isWatch ? rebuildTimerPlugin('index') : null
+    ].filter(Boolean),
+    entryPoints: [resolve(__dirname, 'src/index.tsx')],
+    outfile: 'dist/index.mjs',
+    format: 'esm',
+};
+
+const buildOptionsEsmV2 = {
+    ...baseBuildOptions,
+    plugins:[
+        ...baseBuildOptions.plugins, 
+        isWatch ? rebuildTimerPlugin('디자인 v2') : null
+    ].filter(Boolean),
+    entryPoints: [resolve(__dirname, 'src/v2.tsx')],
+    outfile: 'dist/v2.mjs',
+    format: 'esm',
+};
+
+async function buildTypes() {
+    const tsCache = !isProd ? '--incremental --tsBuildInfoFile dist/.tsbuildinfo' : '';
+    return new Promise((resolve) => {
+        exec(`tsc ${tsCache} --project tsconfig.json`, (error, stdout, stderr) => {
+            if (stderr) {
+                console.error(`stderr: ${stderr}`);
+            }
+            resolve(stdout);
+        });
+    });
+}
+
+async function build() {
+     const start = Date.now(); // 시작 시간 기록
+    try {
+        if (isWatch) {  
+            const ctxMjs = await esbuild.context(buildOptionsEsm);
+            const ctxMjsV2 = await esbuild.context(buildOptionsEsmV2);
+            await Promise.all([ctxMjs.watch(), ctxMjsV2.watch(), buildTypes()]);
+        } else {
+            await Promise.all([
+                esbuild.build(buildOptionsEsm),
+                esbuild.build(buildOptionsEsmV2),
+                buildTypes()
+            ]);
+        }
+        const end = Date.now(); // 끝 시간 기록
+        const elapsed = ((end - start) / 1000).toFixed(2);
+        console.log(`✅ 빌드성공! (${elapsed}초 소요)`);
+    } catch (error) {
+        console.error('❌ 빌드실패:', error);
+        process.exit(1);
+    }
+}
+
+build();
+```
