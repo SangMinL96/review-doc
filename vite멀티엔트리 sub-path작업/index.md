@@ -83,28 +83,13 @@
 
 | 항목 | 내용 |
 |------|------|
-| 코드 수정 시 | `packages/design` 수정 시 `dist/` (예: `v2.js`) **반드시 재빌드** (이미 그렇게 하고 있으면 OK) |
+| **멀티엔트리 추가 시** | 새 엔트리 생성 후 `package.json`의 `exports` 필드를 **반드시 최신화** |
 | exports 일치 | `exports["./v2"]`가 실제 빌드 파일·타입 선언 경로와 맞아야 함 |
 | 패키지 공개 여부 | 외부 배포 시엔 `exports`와 타입 경로 싱크 안 맞으면 에러 나기 쉽고, **로컬 전용**이면 위 설정만으로 충분 |
 
 ---
 
-## 3. 이미지 에셋: .spr 청크 내 Base64 미포함 문제
-
-### 비교
-
-| 청크 분리 방식 | 동작 |
-|--------|------|
-| **단일 엔트리 (기존)** | 이미지를 **전부 Base64**로 변환해서 번들에 포함 |
-| **멀티엔트리 분리 후** | **.spr 이미지는 청크에 Base64로 포함되지 않음** |
-
-### 해결
-
-- **.spr 파일만** `dist/assets` 등으로 **복사**해 두고, 런타임에서는 해당 경로를 참조하도록 처리
-
----
-
-## 4. secureKeypad (Node 전용 모듈)
+## 3. secureKeypad (Node 전용 모듈)
 
 ### 문제
 
@@ -128,7 +113,7 @@ async function findWasmBinary() {
 
 ---
 
-## 5. 런타임 에러: `new dummy` 관련
+## 4. 런타임 에러: `new dummy` 관련
 
 ### 현상
 
@@ -142,7 +127,7 @@ async function findWasmBinary() {
 
 ---
 
-## 6. Craco: 청크 분리 후 node_modules 재번들링 문제
+## 5. Craco: 청크 분리 후 node_modules 재번들링 문제
 
 ### 배경
 
@@ -174,7 +159,6 @@ if (one.test.toString().includes('js') || one.test.toString().includes('jsx')) {
 |------|------|
 | **package.json** | `type: "module"`, `exports`(서브패스·타입·CSS), `typesVersions` 추가 — 멀티엔트리 서브패스 노출의 핵심 |
 | **타입 에러** | `@encarpkg/design/v2` → `paths`로 로컬 `dist` 지정; 로컬 전용이면 상대 경로로 dist 타입 참조 가능 |
-| **이미지** | 단일 엔트리는 전부 Base64, 멀티엔트리 분리 후 .spr 미포함 → .spr만 dist/assets로 복사 후 경로 참조 |
 | **secureKeypad** | .wasm Base64 실패 → 동적 `import()` 로 로딩 |
 | **dummy** | 런타임 에러 → `function dummy() {}` 로 복귀 후 해결 |
 | **Craco** | 청크 분리 후 node_modules까지 재번들링되지 않도록 exclude/include로 `src`만 번들 대상으로 제한 |
